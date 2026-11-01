@@ -125,6 +125,88 @@ db.exec(`
 
 console.log('✅ Database initialized');
 
+// ===== MIGRATIONS =====
+// Add missing columns to existing tables (for upgrades from older versions)
+function runMigrations() {
+  console.log('🔄 Running database migrations...');
+  
+  // Get existing columns for each table
+  function getTableColumns(tableName) {
+    try {
+      const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+      return columns.map(c => c.name);
+    } catch {
+      return [];
+    }
+  }
+
+  // Migrate appointments table
+  const apptColumns = getTableColumns('appointments');
+  if (apptColumns.length > 0) {
+    const requiredColumns = {
+      'client_name': 'TEXT DEFAULT ""',
+      'client_phone': 'TEXT DEFAULT ""',
+      'service_id': 'TEXT DEFAULT ""',
+      'service_name': 'TEXT DEFAULT ""',
+      'date': 'TEXT DEFAULT ""',
+      'time': 'TEXT DEFAULT ""',
+      'status': 'TEXT DEFAULT "pending"',
+      'notes': 'TEXT DEFAULT ""',
+      'created_at': 'DATETIME DEFAULT CURRENT_TIMESTAMP',
+    };
+    for (const [col, type] of Object.entries(requiredColumns)) {
+      if (!apptColumns.includes(col)) {
+        try {
+          db.prepare(`ALTER TABLE appointments ADD COLUMN ${col} ${type}`).run();
+          console.log(`  ✅ Added column appointments.${col}`);
+        } catch (e) {
+          console.log(`  ⚠️  Could not add appointments.${col}: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // Migrate services table
+  const svcColumns = getTableColumns('services');
+  if (svcColumns.length > 0) {
+    const requiredColumns = {
+      'name': 'TEXT DEFAULT ""',
+      'price': 'INTEGER DEFAULT 0',
+      'duration': 'INTEGER DEFAULT 30',
+      'description': 'TEXT DEFAULT ""',
+      'active': 'INTEGER DEFAULT 1',
+      'sort_order': 'INTEGER DEFAULT 0',
+    };
+    for (const [col, type] of Object.entries(requiredColumns)) {
+      if (!svcColumns.includes(col)) {
+        try {
+          db.prepare(`ALTER TABLE services ADD COLUMN ${col} ${type}`).run();
+          console.log(`  ✅ Added column services.${col}`);
+        } catch (e) {
+          console.log(`  ⚠️  Could not add services.${col}: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // Migrate users table
+  const userColumns = getTableColumns('users');
+  if (userColumns.length > 0) {
+    if (!userColumns.includes('created_at')) {
+      try {
+        db.prepare('ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP').run();
+        console.log('  ✅ Added column users.created_at');
+      } catch (e) {
+        console.log(`  ⚠️  Could not add users.created_at: ${e.message}`);
+      }
+    }
+  }
+
+  console.log('✅ Migrations complete');
+}
+
+runMigrations();
+
 // Seed default admin user
 const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
 if (!adminExists) {
