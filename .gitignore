@@ -1,5 +1,28 @@
+# Dependencies
 node_modules/
-.next/
+server/node_modules/
+
+# Build output
 dist/
-build/
+
+# Server database
+server/*.db
+server/*.db-wal
+server/*.db-shm
+
+# Environment
+.env
+server/.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
 *.log
+.next/
+build/
