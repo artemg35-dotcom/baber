@@ -6,6 +6,8 @@ import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import http from 'http';
+import https from 'https';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -124,88 +126,6 @@ db.exec(`
 `);
 
 console.log('✅ Database initialized');
-
-// ===== MIGRATIONS =====
-// Add missing columns to existing tables (for upgrades from older versions)
-function runMigrations() {
-  console.log('🔄 Running database migrations...');
-  
-  // Get existing columns for each table
-  function getTableColumns(tableName) {
-    try {
-      const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
-      return columns.map(c => c.name);
-    } catch {
-      return [];
-    }
-  }
-
-  // Migrate appointments table
-  const apptColumns = getTableColumns('appointments');
-  if (apptColumns.length > 0) {
-    const requiredColumns = {
-      'client_name': 'TEXT DEFAULT ""',
-      'client_phone': 'TEXT DEFAULT ""',
-      'service_id': 'TEXT DEFAULT ""',
-      'service_name': 'TEXT DEFAULT ""',
-      'date': 'TEXT DEFAULT ""',
-      'time': 'TEXT DEFAULT ""',
-      'status': 'TEXT DEFAULT "pending"',
-      'notes': 'TEXT DEFAULT ""',
-      'created_at': 'DATETIME DEFAULT CURRENT_TIMESTAMP',
-    };
-    for (const [col, type] of Object.entries(requiredColumns)) {
-      if (!apptColumns.includes(col)) {
-        try {
-          db.prepare(`ALTER TABLE appointments ADD COLUMN ${col} ${type}`).run();
-          console.log(`  ✅ Added column appointments.${col}`);
-        } catch (e) {
-          console.log(`  ⚠️  Could not add appointments.${col}: ${e.message}`);
-        }
-      }
-    }
-  }
-
-  // Migrate services table
-  const svcColumns = getTableColumns('services');
-  if (svcColumns.length > 0) {
-    const requiredColumns = {
-      'name': 'TEXT DEFAULT ""',
-      'price': 'INTEGER DEFAULT 0',
-      'duration': 'INTEGER DEFAULT 30',
-      'description': 'TEXT DEFAULT ""',
-      'active': 'INTEGER DEFAULT 1',
-      'sort_order': 'INTEGER DEFAULT 0',
-    };
-    for (const [col, type] of Object.entries(requiredColumns)) {
-      if (!svcColumns.includes(col)) {
-        try {
-          db.prepare(`ALTER TABLE services ADD COLUMN ${col} ${type}`).run();
-          console.log(`  ✅ Added column services.${col}`);
-        } catch (e) {
-          console.log(`  ⚠️  Could not add services.${col}: ${e.message}`);
-        }
-      }
-    }
-  }
-
-  // Migrate users table
-  const userColumns = getTableColumns('users');
-  if (userColumns.length > 0) {
-    if (!userColumns.includes('created_at')) {
-      try {
-        db.prepare('ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP').run();
-        console.log('  ✅ Added column users.created_at');
-      } catch (e) {
-        console.log(`  ⚠️  Could not add users.created_at: ${e.message}`);
-      }
-    }
-  }
-
-  console.log('✅ Migrations complete');
-}
-
-runMigrations();
 
 // Seed default admin user
 const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
@@ -477,13 +397,59 @@ app.put('/api/telegram', authMiddleware, (req, res) => {
   }
 });
 
+// HTTP helper (compatible with all Node.js versions)
+function httpRequest(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      const urlObj = new URL(url);
+      const isHttps = urlObj.protocol === 'https:';
+      const lib = isHttps ? https : http;
+      
+      const reqOptions = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (isHttps ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: options.method || 'GET',
+        headers: options.headers || {},
+        timeout: 10000,
+      };
+
+      const req = lib.request(reqOptions, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            text: () => Promise.resolve(data),
+            json: () => Promise.resolve(JSON.parse(data)),
+          });
+        });
+      });
+
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Request timeout'));
+      });
+
+      if (options.body) {
+        req.write(options.body);
+      }
+      req.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 app.post('/api/telegram/test', authMiddleware, async (req, res) => {
   try {
     const { botToken, chatId } = req.body;
     if (!botToken || !chatId) {
       return res.status(400).json({ error: 'Bot token and chat ID required' });
     }
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    const response = await httpRequest(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -499,7 +465,7 @@ app.post('/api/telegram/test', authMiddleware, async (req, res) => {
     }
   } catch (err) {
     console.error('Telegram test error:', err);
-    res.status(500).json({ error: 'Connection error' });
+    res.status(500).json({ error: 'Connection error: ' + err.message });
   }
 });
 
@@ -517,7 +483,7 @@ async function sendTelegramNotification(appointment) {
       `⏰ Время: ${appointment.time}\n` +
       (appointment.notes ? `📝 Заметки: ${appointment.notes}\n` : '');
 
-    await fetch(`https://api.telegram.org/bot${config.bot_token}/sendMessage`, {
+    await httpRequest(`https://api.telegram.org/bot${config.bot_token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -527,7 +493,7 @@ async function sendTelegramNotification(appointment) {
     });
     console.log('✅ Telegram notification sent');
   } catch (err) {
-    console.error('Telegram notification error:', err);
+    console.error('Telegram notification error:', err.message);
   }
 }
 
